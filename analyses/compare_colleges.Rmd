@@ -1,0 +1,290 @@
+---
+title: "College Comparison"
+output: html_notebook
+---
+
+```{r libs}
+library(tidyverse); library(readxl)
+```
+
+[College Scorecard](https://collegescorecard.ed.gov/)
+[College Scorecard Data Docs](https://collegescorecard.ed.gov/data/documentation/)
+
+```{r load}
+by_field <- 
+  read_csv(
+    "../data/Most-Recent-Field-Data-Elements.csv",
+    na = c("NULL","","NA")
+  )
+
+colleges <- 
+  read_csv(
+    "../data/CollegeScorecard_Raw_Data/MERGED2017_18_PP.csv",
+    na = c("NULL","","NA")
+  )
+
+dictionary <- read_excel("../data/CollegeScorecardDataDictionary.xlsx",sheet = "data_dictionary")
+```
+
+```{r}
+
+fields <-
+  by_field %>%
+  filter(CREDLEV == 3) %>%
+  select(CIPCODE,CIPDESC) %>%
+  distinct() %>%
+  filter(
+    str_detect(
+      CIPDESC,
+      "Ecology|Natural Resources|Statistics|Economics
+      |Wildlife|Environmental Design|Zoology
+      |Fisheries Sciences|Marine Sciences"
+    )
+  )
+
+by_field <-
+  by_field %>%
+  filter(CREDLEV == 3) %>%
+  filter(CIPCODE %in% fields$CIPCODE)
+
+field_pivot <-
+  by_field %>%
+  mutate(
+    CIPDESC = str_replace_all(str_to_lower(CIPDESC), "[:punct:]| ","_"),
+    CIPDESC = str_replace_all(CIPDESC, "_$",""),
+    COUNT = as.numeric(COUNT),
+    COUNT = replace_na(COUNT,0),
+    has = 1
+  ) %>%
+  select(UNITID,CIPDESC,has) %>%
+  distinct() %>%
+  pivot_wider(
+    id_cols = UNITID,
+    names_from = CIPDESC,
+    values_from = has,
+    values_fill = list(has = 0)
+  ) 
+
+```
+
+
+
+Filter for SAT score = 590
+720
+
+Majors
+Tuition
+"tuition.in_state"                                              
+"tuition.out_of_state"  
+"net_price.public.by_income_level.110001-plus"                  
+"net_price.private.by_income_level.110001-plus"  
+
+```{r clean}
+df <-
+  colleges %>%
+  filter(UNITID %in% unique(by_field$UNITID)) %>%
+  select(
+    UNITID,OPEID,INSTNM,
+    CONTROL,RELAFFIL,UGDS,UG,STABBR,
+    REGION,LOCALE,LOCALE2,
+    ST_FIPS,CITY,LATITUDE,LONGITUDE,
+    ends_with("DEG"),starts_with("PCIP"),
+    starts_with("CC"),
+    starts_with("SAT"),
+    starts_with("NPT4_"),starts_with("NPT45_"),
+    starts_with("TUITIONFEE"),INEXPFTE,
+    starts_with("CIPTFB"),
+    ends_with("RPY_1YR_RT"),ends_with("RPY_3YR_RT"),
+    ends_with("RPY_7YR_RT"),
+    ends_with("DEBT_MDN"),
+    MD_EARN_WNE_P8,ends_with("EARN_WNE_P10"),
+    starts_with("MTHCMP")
+  ) %>%
+  mutate(
+    CONTROL = recode(
+      as.character(CONTROL),
+      `Public` = '1',
+      `Private non-profit` = '2',
+      `Private for-profit` = '3'
+    )
+  )
+
+labels <-
+  colnames(df) %>% 
+  enframe(name = NULL) %>%
+  left_join(
+    dictionary %>% 
+      select(
+        var=`VARIABLE NAME`,
+        name=`developer-friendly name`
+      ),
+    by = c('value' = 'var')
+  )
+
+colnames(df) <- labels$name
+```
+
+```{r}
+
+isaac_options <-
+  df %>%
+  select(
+    id,name,state,
+    size,
+    starts_with("tuition"),
+    starts_with("avg_net_price"),
+    starts_with("location"),
+    starts_with("sat_scores.25th_percentile"),
+    starts_with("sat_scores.75th_percentile"),
+    `tuition.in_state`,
+    tuition.out_of_state,
+    net_price.public.by_income = `net_price.public.by_income_level.110001-plus`,
+    net_price.private.by_income = `net_price.private.by_income_level.110001-plus`
+  ) %>%
+  mutate(
+    avg_cost = case_when(
+      !is.na(tuition.in_state) & state == "MI" ~ tuition.in_state,
+      !is.na(tuition.out_of_state) & state != "MI" ~ tuition.out_of_state,
+      !is.na(net_price.public.by_income)  ~ net_price.public.by_income,
+      !is.na(net_price.private.by_income) ~ net_price.private.by_income,
+      !is.na(avg_net_price.public)        ~ avg_net_price.public,
+      !is.na(avg_net_price.private)       ~ avg_net_price.private 
+    ),
+    ntile_cost = ntile(avg_cost, n = 100)
+  ) %>%
+  rename(
+    sat_25th_read = sat_scores.25th_percentile.critical_reading,
+    sat_75th_read = sat_scores.75th_percentile.critical_reading,
+    sat_25th_math = sat_scores.25th_percentile.math,
+    sat_75th_math = sat_scores.75th_percentile.math
+  ) %>%
+  select(
+    -starts_with("tuition"),-starts_with("avg_net_price"),-starts_with("net_price"),
+    -ends_with(".writing")
+  ) %>%
+  left_join(field_pivot, by = c("id" = "UNITID")) %>%
+  mutate(
+    natural_resources = case_when(
+      natural_resources_conservation_and_research == 1 ~ 1,
+      natural_resources_and_conservation__other == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    statistics = case_when(
+      statistics == 1 ~ 1,
+      mathematics_and_statistics__other == 1 ~ 1,
+      TRUE ~ 0
+    )
+  ) %>%
+  select(
+    -natural_resources_conservation_and_research,
+    -natural_resources_and_conservation__other,
+    -mathematics_and_statistics__other,
+    -natural_resources_management_and_policy
+  ) %>%
+  rename(
+    ecology = ecology__evolution__systematics__and_population_biology,
+    wildlife_mgmt = wildlife_and_wildlands_science_and_management,
+    fisheries = fishing_and_fisheries_sciences_and_management
+  ) %>%
+  sjmisc::row_sums(
+    ecology:natural_resources,
+    n = 3,
+    var = "n_majors"
+  ) %>%
+  # Rank score for majors based on Isaac's preference
+  mutate(
+    # Order of importance for majors:
+    marine_sciences_rank = marine_sciences * 7,
+    statistics_rank = statistics * 6,
+    environmental_design_rank = environmental_design * 5,
+    wildlife_mgmt_rank = wildlife_mgmt * 4,
+    natural_resources_rank = natural_resources * 3,
+    ecology_rank = ecology * 2,
+    fisheries_rank = fisheries * 1
+  ) %>%
+  sjmisc::row_sums(
+    marine_sciences_rank:fisheries_rank,
+    n = 3,
+    var = "rank"
+  ) %>%
+  select(-ends_with("_rank")) %>%
+  filter(
+    # Decent cost and some majors
+    avg_cost <= 20000 & n_majors > 1
+    # Schools with > interesting majors
+    | id %in% c("133492","164988","169080")
+  ) %>%
+  filter(sat_25th_math <= 590,sat_25th_read <= 750)  %>%
+  # No states that are lame
+  filter(
+    !state %in% c(
+      "IA","AL","AK","AR","DE","IL","IN","KS","MN","MO","NE","NM","NV","NJ",
+      "ND","OH","OK","PA","SD","TX","UT","WV","WI","WY"
+    )
+  ) %>%
+  mutate(rank = round(cume_dist(rank), digits = 2))  %>%
+  filter(rank > 0.38 | name %in% c("Calvin College","Humboldt State University")) %>%
+  mutate(interest_to_cost = round(rank / cume_dist(avg_cost), digits = 2)) %>%
+  select(id,name,rank,ntile_cost,interest_to_cost,everything()) %>%
+  filter(
+    !str_detect(name,"Brigham Young|Dearborn|Oakland|Fredonia|CUNY|Northern Kentucky|Chico")
+  )
+
+
+
+```
+
+
+```{r}
+
+p <-
+  isaac_options %>%
+  select(name,animal_sciences:mathematics_and_statistics__other) %>%
+  pivot_longer(
+    cols = animal_sciences:mathematics_and_statistics__other,
+    names_to = "field", values_to = "count"
+  ) %>%
+  group_by(name) %>%
+  mutate(n_fields = sum(count)) %>%
+  ggplot(aes(x = field, y = fct_reorder(name,n_fields))) +
+  geom_tile(aes(fill = count)) +
+  #scale_fill_viridis_c() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank()
+  )
+
+plotly::ggplotly(p)
+
+```
+
+
+```{r}
+library(leaflet)
+
+pal <- colorNumeric(palette = "Blues", domain = isaac_options$rank)
+
+isaac_options %>%
+  mutate(
+    label = paste0(
+      "<b>",name,"</b>","<br/>",
+      "Rank:",rank,"<br/>",
+      "$:",avg_cost
+    )
+  ) %>%
+  leaflet() %>%
+  addProviderTiles(providers$Esri.WorldGrayCanvas) %>%
+  addCircles(
+    lng = ~location.lon, 
+    lat = ~location.lat,
+    popup = ~label,
+    color = ~pal(rank)
+  ) 
+
+```
+
+
+```{r}
+write_csv(isaac_options,"isaac_options.csv")
+```
+
