@@ -1,0 +1,228 @@
+---
+title: "College Comparison - Jabari"
+output: 
+  html_document:
+    theme: cosmo
+---
+
+```{r libs, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message=FALSE)
+library(tidyverse); library(readxl)
+```
+
+- [College Scorecard](https://collegescorecard.ed.gov/)
+- [College Scorecard Data Docs](https://collegescorecard.ed.gov/data/documentation/)
+
+```{r load}
+by_field <- 
+  read_csv(
+    "../data/Most-Recent-Cohorts-Field-of-Study.csv",
+    na = c("NULL","","NA","PrivacySuppressed")
+  )
+
+colleges <- 
+  read_csv(
+    "../data/Most-Recent-Cohorts-Institution.csv",
+    na = c("NULL","","NA")
+  )
+
+dictionary <- 
+  read_excel(
+    "../data/CollegeScorecardDataDictionary.xlsx",
+    sheet = "Institution_Data_Dictionary"
+  ) 
+```
+
+
+Majors
+
+- 5208 = Finance and Financial Management Services.
+- 5206 = Business/Managerial Economics.
+- 5202 = Business Administration, Management and Operations.
+
+```{r get_fields}
+
+x <-
+  by_field %>%
+  mutate(CIPDESC = str_remove(CIPDESC,"\\.$")) %>%
+  group_by(CIPDESC) %>%
+  summarize()
+
+fields <-
+  by_field %>%
+  filter(CREDLEV >= 3) %>%
+  select(CIPCODE,CIPDESC) %>%
+  distinct() %>%
+  filter(
+    str_detect(
+      CIPDESC,
+      regex(
+        "Financial Management|Managerial Economics
+        |Business Administration", 
+        ignore_case = T
+      )
+    )
+  )
+
+sub_field <-
+  by_field %>%
+  filter(CREDLEV == 3) %>%
+  filter(CIPCODE %in% fields$CIPCODE)
+
+field_pivot <-
+  sub_field %>%
+  mutate(
+    CIPDESC = str_replace_all(str_to_lower(CIPDESC), "[:punct:]| ","_"),
+    CIPDESC = str_replace_all(CIPDESC, "_$",""),
+    # COUNT = as.numeric(COUNT),
+    # COUNT = replace_na(COUNT,0),
+    has = 1
+  ) %>%
+  select(UNITID,CIPDESC,has) %>%
+  distinct() %>%
+  pivot_wider(
+    id_cols = UNITID,
+    names_from = CIPDESC,
+    values_from = has,
+    values_fill = list(has = 0)
+  ) 
+
+```
+
+```{r clean}
+df <-
+  colleges %>%
+  filter(UNITID %in% unique(sub_field$UNITID)) %>%
+  select(
+    UNITID,OPEID,INSTNM,
+    CONTROL,RELAFFIL,UGDS,UG,STABBR,
+    REGION,LOCALE,LOCALE2,
+    ST_FIPS,CITY,LATITUDE,LONGITUDE,
+    ends_with("DEG"),starts_with("PCIP"),
+    starts_with("CC"),
+    starts_with("SAT"),
+    starts_with("NPT4_"),starts_with("NPT45_"),
+    starts_with("TUITIONFEE"),INEXPFTE,
+    starts_with("CIPTFB"),
+    ends_with("RPY_1YR_RT"),ends_with("RPY_3YR_RT"),
+    ends_with("RPY_7YR_RT"),
+    ends_with("DEBT_MDN"),
+    MD_EARN_WNE_P8,ends_with("EARN_WNE_P10"),
+    starts_with("MTHCMP")
+  ) %>%
+  mutate(
+    CONTROL = recode(
+      as.character(CONTROL),
+      `Public` = '1',
+      `Private non-profit` = '2',
+      `Private for-profit` = '3'
+    )
+  )
+
+labels <-
+  colnames(df) %>% 
+  enframe(name = NULL) %>%
+  left_join(
+    dictionary %>% 
+      select(
+        var = `VARIABLE NAME`,
+        name = `developer-friendly name`
+      ),
+    by = c('value' = 'var')
+  )
+
+colnames(df) <- labels$name
+```
+
+```{r jabari_options}
+
+jabari_options <-
+  df %>%
+  select(
+    id,name,city,state,
+    size,
+    starts_with("tuition"),
+    starts_with("avg_net_price"),
+    starts_with("location"),
+    starts_with("sat_scores.25th_percentile"),
+    starts_with("sat_scores.75th_percentile"),
+    sat_scores.average.overall,
+    `tuition.in_state`,
+    tuition.out_of_state,
+    net_price.public.by_income = `net_price.public.by_income_level.0-48000`,
+    net_price.private.by_income = `net_price.private.by_income_level.0-48000`,
+    median_earnings = `8_yrs_after_entry.median_earnings`
+  ) %>%
+  mutate(
+    avg_cost = case_when(
+      !is.na(tuition.in_state) & state == "MI" ~ tuition.in_state,
+      !is.na(net_price.public.by_income)  ~ net_price.public.by_income,
+      !is.na(net_price.private.by_income) ~ net_price.private.by_income,
+      !is.na(avg_net_price.public)        ~ avg_net_price.public,
+      !is.na(avg_net_price.private)       ~ avg_net_price.private,
+      !is.na(tuition.out_of_state) & state != "MI" ~ tuition.out_of_state
+    ),
+    ntile_size = ntile(size, n = 100),
+    ntile_sat = ntile(sat_scores.average.overall, n = 100),
+    ntile_cost = ntile(avg_cost, n = 100)
+  ) %>%
+  rename(
+    sat_25th_read = sat_scores.25th_percentile.critical_reading,
+    sat_75th_read = sat_scores.75th_percentile.critical_reading,
+    sat_25th_math = sat_scores.25th_percentile.math,
+    sat_75th_math = sat_scores.75th_percentile.math,
+    sat_overall = sat_scores.average.overall
+  ) %>%
+  select(
+    -starts_with("tuition"),-starts_with("avg_net_price"),-starts_with("net_price"),
+    -ends_with(".writing")
+  ) %>%
+  left_join(field_pivot, by = c("id" = "UNITID")) %>%
+  filter(state %in% c("MI")) %>%
+  rowwise() %>%
+  mutate(
+    major_psych = sum(c_across(matches("psych|neuro")), na.rm = T),
+    major_architect = sum(c_across(matches("architect")), na.rm = T),
+    major_engineer = sum(c_across(matches("engineer")), na.rm = T),
+    major_stats = sum(c_across(matches("statistic")), na.rm = T),
+    major_economist = sum(c_across(matches("economic")), na.rm = T)
+  ) %>%
+  ungroup() %>%
+  select(id:ntile_cost,starts_with("major_"))
+
+```
+
+```{r map}
+library(leaflet)
+
+pal <- colorNumeric(palette = "RdYlGn", domain = jabari_options$ntile_cost, reverse = T)
+
+jabari_options %>%
+  mutate(
+    label = paste0(
+      "<b>",name,"</b>","<br/>",
+      "# Students:",size,"<br/>",
+      "$ (Avg):",avg_cost,"<br/>",
+      "Median Earnings:",median_earnings
+    )
+  ) %>%
+  leaflet() %>%
+  addProviderTiles(providers$Stamen.TonerLite) %>%
+  addCircleMarkers(
+    lng = ~location.lon, 
+    lat = ~location.lat,
+    popup = ~label,
+    color = ~pal(ntile_cost),
+    radius = ~ntile_size/10 + 1,
+    stroke = F, fillOpacity = 0.5
+  ) 
+
+```
+
+```{r}
+library(reactable)
+
+jabari_options %>%
+  select(name,avg_cost,sat_overall,size,starts_with("major_")) %>%
+  reactable()
+```
