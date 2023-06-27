@@ -1,14 +1,17 @@
 ---
-title: "College Comparison"
-output: html_notebook
+title: "College Comparison - Ezra"
+output: 
+  html_document:
+    theme: cosmo
 ---
 
-```{r libs}
+```{r libs, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message=FALSE)
 library(tidyverse); library(readxl)
 ```
 
-[College Scorecard](https://collegescorecard.ed.gov/)
-[College Scorecard Data Docs](https://collegescorecard.ed.gov/data/documentation/)
+- [College Scorecard](https://collegescorecard.ed.gov/)
+- [College Scorecard Data Docs](https://collegescorecard.ed.gov/data/documentation/)
 
 ```{r load}
 by_field <- 
@@ -30,7 +33,7 @@ dictionary <-
   ) 
 ```
 
-```{r}
+```{r get_fields}
 
 x <-
   by_field %>%
@@ -40,28 +43,26 @@ x <-
 
 fields <-
   by_field %>%
-  filter(CREDLEV == 3) %>%
+  filter(CREDLEV >= 3) %>%
   select(CIPCODE,CIPDESC) %>%
   distinct() %>%
   filter(
     str_detect(
       CIPDESC,
       regex(
-        "Data Science|Applied Statistics|Statistics|Bioinformatics
-        |Interior Architecture|Architectural Engineering|Architecture
-        |Psychology|neuroscience", 
+        "Liberal Arts and Sciences, General Studies and Humanities.|Education, General.|Educational Administration and Supervision.|Special Education and Teaching.|Teacher Education and Professional Development, Specific Levels and Methods.|Teacher Education and Professional Development, Specific Subject Areas.|Educational Assessment, Evaluation, and Research.|Education, Other.|Basic Skills and Developmental/Remedial Education.|Social and Philosophical Foundations of Education.|International and Comparative Education.|Movement and Mind-Body Therapies and Education.", 
         ignore_case = T
       )
     )
   )
 
-by_field <-
+sub_field <-
   by_field %>%
   filter(CREDLEV == 3) %>%
   filter(CIPCODE %in% fields$CIPCODE)
 
 field_pivot <-
-  by_field %>%
+  sub_field %>%
   mutate(
     CIPDESC = str_replace_all(str_to_lower(CIPDESC), "[:punct:]| ","_"),
     CIPDESC = str_replace_all(CIPDESC, "_$",""),
@@ -80,22 +81,16 @@ field_pivot <-
 
 ```
 
+What about:
 
-
-Filter for SAT score = 590
-720
-
-Majors
-Tuition
-"tuition.in_state"                                              
-"tuition.out_of_state"  
-"net_price.public.by_income_level.110001-plus"                  
-"net_price.private.by_income_level.110001-plus"  
+- Liberal Arts and Sciences, General Studies and Humanities
+- Education
+- Curriculum and Instruction
 
 ```{r clean}
 df <-
   colleges %>%
-  filter(UNITID %in% unique(by_field$UNITID)) %>%
+  filter(UNITID %in% unique(sub_field$UNITID)) %>%
   select(
     UNITID,OPEID,INSTNM,
     CONTROL,RELAFFIL,UGDS,UG,STABBR,
@@ -137,22 +132,24 @@ labels <-
 colnames(df) <- labels$name
 ```
 
-```{r}
+```{r ezra_options}
 
 ezra_options <-
   df %>%
   select(
-    id,name,state,
+    id,name,city,state,
     size,
     starts_with("tuition"),
     starts_with("avg_net_price"),
     starts_with("location"),
     starts_with("sat_scores.25th_percentile"),
     starts_with("sat_scores.75th_percentile"),
+    sat_scores.average.overall,
     `tuition.in_state`,
     tuition.out_of_state,
     net_price.public.by_income = `net_price.public.by_income_level.110001-plus`,
-    net_price.private.by_income = `net_price.private.by_income_level.110001-plus`
+    net_price.private.by_income = `net_price.private.by_income_level.110001-plus`,
+    median_earnings = `8_yrs_after_entry.median_earnings`
   ) %>%
   mutate(
     avg_cost = case_when(
@@ -163,109 +160,57 @@ ezra_options <-
       !is.na(avg_net_price.public)        ~ avg_net_price.public,
       !is.na(avg_net_price.private)       ~ avg_net_price.private 
     ),
+    ntile_size = ntile(size, n = 100),
+    ntile_sat = ntile(sat_scores.average.overall, n = 100),
     ntile_cost = ntile(avg_cost, n = 100)
   ) %>%
   rename(
     sat_25th_read = sat_scores.25th_percentile.critical_reading,
     sat_75th_read = sat_scores.75th_percentile.critical_reading,
     sat_25th_math = sat_scores.25th_percentile.math,
-    sat_75th_math = sat_scores.75th_percentile.math
+    sat_75th_math = sat_scores.75th_percentile.math,
+    sat_overall = sat_scores.average.overall
   ) %>%
   select(
     -starts_with("tuition"),-starts_with("avg_net_price"),-starts_with("net_price"),
     -ends_with(".writing")
   ) %>%
-  left_join(field_pivot, by = c("id" = "UNITID")) 
-
-
-tst <-
-  ezra_options %>%
+  left_join(field_pivot, by = c("id" = "UNITID")) %>%
+  # filter(
+  #   state %in% c("MI") |
+  #     city %in% c("Nashville", "Chicago")
+  # ) %>%
+  rowwise() %>%
   mutate(
-    natural_resources = case_when(
-      natural_resources_conservation_and_research == 1 ~ 1,
-      natural_resources_and_conservation__other == 1 ~ 1,
-      TRUE ~ 0
-    ),
-    statistics = case_when(
-      statistics == 1 ~ 1,
-      mathematics_and_statistics__other == 1 ~ 1,
-      TRUE ~ 0
+    major_liberal = sum(c_across(matches("liberal")), na.rm = T),
+    major_education = sum(c_across(matches("education")), na.rm = T)
+  ) %>%
+  ungroup() %>%
+  select(id:ntile_cost,starts_with("major_")) %>%
+  filter(
+    id %in% c(
+      "144740","145600","146719","147679","169080",
+      "170082","170976","171100","172334","172699",
+      "144050","152080"
     )
-  ) %>%
-  select(
-    -natural_resources_conservation_and_research,
-    -natural_resources_and_conservation__other,
-    -mathematics_and_statistics__other,
-    -natural_resources_management_and_policy
-  ) %>%
-  rename(
-    ecology = ecology__evolution__systematics__and_population_biology,
-    wildlife_mgmt = wildlife_and_wildlands_science_and_management,
-    fisheries = fishing_and_fisheries_sciences_and_management
-  ) %>%
-  sjmisc::row_sums(
-    ecology:natural_resources,
-    n = 3,
-    var = "n_majors"
-  ) %>%
-  # Rank score for majors based on Isaac's preference
-  mutate(
-    # Order of importance for majors:
-    marine_sciences_rank = marine_sciences * 7,
-    statistics_rank = statistics * 6,
-    environmental_design_rank = environmental_design * 5,
-    wildlife_mgmt_rank = wildlife_mgmt * 4,
-    natural_resources_rank = natural_resources * 3,
-    ecology_rank = ecology * 2,
-    fisheries_rank = fisheries * 1
-  ) %>%
-  sjmisc::row_sums(
-    marine_sciences_rank:fisheries_rank,
-    n = 3,
-    var = "rank"
-  ) %>%
-  select(-ends_with("_rank")) %>%
-  filter(
-    # Decent cost and some majors
-    avg_cost <= 20000 & n_majors > 1
-    # Schools with > interesting majors
-    | id %in% c("133492","164988","169080")
-  ) %>%
-  filter(sat_25th_math <= 590,sat_25th_read <= 750)  %>%
-  # No states that are lame
-  filter(
-    !state %in% c(
-      "IA","AL","AK","AR","DE","IL","IN","KS","MN","MO","NE","NM","NV","NJ",
-      "ND","OH","OK","PA","SD","TX","UT","WV","WI","WY"
-    )
-  ) %>%
-  mutate(rank = round(cume_dist(rank), digits = 2))  %>%
-  filter(rank > 0.38 | name %in% c("Calvin College","Humboldt State University")) %>%
-  mutate(interest_to_cost = round(rank / cume_dist(avg_cost), digits = 2)) %>%
-  select(id,name,rank,ntile_cost,interest_to_cost,everything()) %>%
-  filter(
-    !str_detect(name,"Brigham Young|Dearborn|Oakland|Fredonia|CUNY|Northern Kentucky|Chico")
   )
-
-
 
 ```
 
-
-```{r}
+```{r, include=FALSE}
 
 p <-
-  isaac_options %>%
-  select(name,animal_sciences:mathematics_and_statistics__other) %>%
+  ezra_options %>%
+  select(name,starts_with("major_")) %>%
   pivot_longer(
-    cols = animal_sciences:mathematics_and_statistics__other,
+    cols = starts_with("major_"),
     names_to = "field", values_to = "count"
   ) %>%
   group_by(name) %>%
   mutate(n_fields = sum(count)) %>%
   ggplot(aes(x = field, y = fct_reorder(name,n_fields))) +
   geom_tile(aes(fill = count)) +
-  #scale_fill_viridis_c() +
+  # scale_fill_viridis_c() +
   theme(
     axis.text.x = element_blank(),
     axis.text.y = element_blank()
@@ -275,33 +220,43 @@ plotly::ggplotly(p)
 
 ```
 
-
-```{r}
+```{r map}
 library(leaflet)
 
-pal <- colorNumeric(palette = "Blues", domain = isaac_options$rank)
+pal <- colorNumeric(palette = "RdYlGn", domain = ezra_options$ntile_cost, reverse = T)
 
-isaac_options %>%
+ezra_options %>%
   mutate(
     label = paste0(
       "<b>",name,"</b>","<br/>",
-      "Rank:",rank,"<br/>",
-      "$:",avg_cost
+      "# Students:",size,"<br/>",
+      "$ (Avg):",avg_cost,"<br/>",
+      "Median Earnings:",median_earnings
     )
   ) %>%
   leaflet() %>%
-  addProviderTiles(providers$Esri.WorldGrayCanvas) %>%
-  addCircles(
+  addProviderTiles(providers$Stamen.TonerLite) %>%
+  addCircleMarkers(
     lng = ~location.lon, 
     lat = ~location.lat,
     popup = ~label,
-    color = ~pal(rank)
+    color = ~pal(ntile_cost),
+    radius = ~ntile_size/10 + 1,
+    stroke = F, fillOpacity = 0.5
   ) 
 
 ```
 
-
 ```{r}
-write_csv(isaac_options,"isaac_options.csv")
+library(reactable)
+
+ezra_options %>%
+  select(name,avg_cost,sat_overall,size,starts_with("major_")) %>%
+  reactable()
+```
+
+
+```{r write}
+write_csv(ezra_options,"ezra_options.csv")
 ```
 
